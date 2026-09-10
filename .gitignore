@@ -7,3 +7,4 @@ server/node_modules/
 .DS_Store
 server/test.js
 test-vercel.js
+.vercel/
