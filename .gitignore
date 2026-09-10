@@ -8,3 +8,4 @@ server/node_modules/
 server/test.js
 test-vercel.js
 .vercel/
+test-vercel.cjs
