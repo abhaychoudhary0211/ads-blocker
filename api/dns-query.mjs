@@ -1,26 +1,55 @@
 import dnsPacket from "dns-packet";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const UPSTREAM_DOH =
   process.env.UPSTREAM_DOH ||
   "https://cloudflare-dns.com/dns-query";
 
-const BLOCKED = new Set([
-  "ads.example.com",
-  "tracker.example.com",
-  "doubleclick.net"
-]);
+const BLOCKLIST_PATH = path.join(__dirname, "blocklist.txt");
+
+let blockedDomains;
+
+function loadBlocklist() {
+  if (blockedDomains) {
+    return blockedDomains;
+  }
+
+  const text = fs.readFileSync(BLOCKLIST_PATH, "utf8");
+
+  blockedDomains = new Set(
+    text
+      .split(/\r?\n/)
+      .map(domain => domain.trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  console.log(
+    `Loaded ${blockedDomains.size} blocked domains`
+  );
+
+  return blockedDomains;
+}
 
 function isBlocked(hostname) {
-  const host = hostname.toLowerCase().replace(/\.$/, "");
+  const blocklist = loadBlocklist();
 
-  if (BLOCKED.has(host)) {
+  const host = hostname
+    .toLowerCase()
+    .replace(/\.$/, "");
+
+  if (blocklist.has(host)) {
     return true;
   }
 
   const parts = host.split(".");
 
   for (let i = 1; i < parts.length - 1; i++) {
-    if (BLOCKED.has(parts.slice(i).join("."))) {
+    if (blocklist.has(parts.slice(i).join("."))) {
       return true;
     }
   }
@@ -112,18 +141,19 @@ async function processDns(request) {
     });
   }
 
-  console.log("DNS request:", question.name, question.type);
-
   if (isBlocked(question.name)) {
     console.log("BLOCKED:", question.name);
 
-    return new Response(createBlockedResponse(dnsRequest), {
-      status: 200,
-      headers: {
-        "Content-Type": "application/dns-message",
-        "Cache-Control": "public, max-age=60"
+    return new Response(
+      createBlockedResponse(dnsRequest),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/dns-message",
+          "Cache-Control": "public, max-age=60"
+        }
       }
-    });
+    );
   }
 
   console.log("FORWARDED:", question.name);
@@ -138,8 +168,6 @@ async function processDns(request) {
   });
 
   if (!upstream.ok) {
-    console.error("Upstream DNS error:", upstream.status);
-
     return new Response("Upstream DNS error", {
       status: 502
     });
