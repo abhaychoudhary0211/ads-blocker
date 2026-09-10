@@ -1,0 +1,155 @@
+import dnsPacket from "dns-packet";
+
+const UPSTREAM_DOH =
+  process.env.UPSTREAM_DOH ||
+  "https://cloudflare-dns.com/dns-query";
+
+const BLOCKED = new Set([
+  "ads.example.com",
+  "tracker.example.com",
+  "doubleclick.net"
+]);
+
+function isBlocked(hostname) {
+  const host = hostname.toLowerCase().replace(/\.$/, "");
+
+  if (BLOCKED.has(host)) {
+    return true;
+  }
+
+  const parts = host.split(".");
+
+  for (let i = 1; i < parts.length - 1; i++) {
+    if (BLOCKED.has(parts.slice(i).join("."))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function createBlockedResponse(request) {
+  const answers = [];
+
+  for (const question of request.questions || []) {
+    if (question.type === "A") {
+      answers.push({
+        name: question.name,
+        type: "A",
+        class: "IN",
+        ttl: 60,
+        data: "0.0.0.0"
+      });
+    }
+
+    if (question.type === "AAAA") {
+      answers.push({
+        name: question.name,
+        type: "AAAA",
+        class: "IN",
+        ttl: 60,
+        data: "::"
+      });
+    }
+  }
+
+  return dnsPacket.encode({
+    type: "response",
+    id: request.id,
+    flags:
+      dnsPacket.RECURSION_DESIRED |
+      dnsPacket.RECURSION_AVAILABLE,
+    questions: request.questions || [],
+    answers,
+    authorities: [],
+    additionals: []
+  });
+}
+
+function decodeDnsGetValue(value) {
+  const normalized = value
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+
+  const padded =
+    normalized +
+    "=".repeat((4 - (normalized.length % 4)) % 4);
+
+  return Buffer.from(padded, "base64");
+}
+
+export default async function handler(request) {
+  if (request.method !== "GET" && request.method !== "POST") {
+    return new Response("Method Not Allowed", {
+      status: 405,
+      headers: { Allow: "GET, POST" }
+    });
+  }
+
+  try {
+    let dnsMessage;
+
+    if (request.method === "GET") {
+      const url = new URL(request.url);
+      const dns = url.searchParams.get("dns");
+
+      if (!dns) {
+        return new Response("Missing dns parameter", {
+          status: 400
+        });
+      }
+
+      dnsMessage = decodeDnsGetValue(dns);
+    } else {
+      dnsMessage = Buffer.from(await request.arrayBuffer());
+    }
+
+    const dnsRequest = dnsPacket.decode(dnsMessage);
+    const question = dnsRequest.questions?.[0];
+
+    if (!question?.name) {
+      return new Response("Missing DNS question", {
+        status: 400
+      });
+    }
+
+    if (isBlocked(question.name)) {
+      return new Response(createBlockedResponse(dnsRequest), {
+        status: 200,
+        headers: {
+          "content-type": "application/dns-message",
+          "cache-control": "public, max-age=60"
+        }
+      });
+    }
+
+    const upstream = await fetch(UPSTREAM_DOH, {
+      method: "POST",
+      headers: {
+        "content-type": "application/dns-message",
+        accept: "application/dns-message"
+      },
+      body: dnsMessage
+    });
+
+    if (!upstream.ok) {
+      return new Response("Upstream DNS error", {
+        status: 502
+      });
+    }
+
+    return new Response(await upstream.arrayBuffer(), {
+      status: 200,
+      headers: {
+        "content-type": "application/dns-message",
+        "cache-control": "no-store"
+      }
+    });
+  } catch (error) {
+    console.error("DNS processing error:", error);
+
+    return new Response("DNS processing error", {
+      status: 500
+    });
+  }
+}
