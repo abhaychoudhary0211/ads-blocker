@@ -1,4 +1,4 @@
-import dnsPacket from "dns-packet";
+const dnsPacket = require("dns-packet");
 
 const UPSTREAM_DOH =
   process.env.UPSTREAM_DOH ||
@@ -66,7 +66,7 @@ function createBlockedResponse(request) {
   });
 }
 
-function decodeDnsGetValue(value) {
+function decodeGetRequest(value) {
   const normalized = value
     .replace(/-/g, "+")
     .replace(/_/g, "/");
@@ -78,49 +78,44 @@ function decodeDnsGetValue(value) {
   return Buffer.from(padded, "base64");
 }
 
-export default async function handler(request) {
-  if (request.method !== "GET" && request.method !== "POST") {
-    return new Response("Method Not Allowed", {
-      status: 405,
-      headers: { Allow: "GET, POST" }
-    });
-  }
-
+module.exports = async function handler(req, res) {
   try {
+    if (req.method !== "GET" && req.method !== "POST") {
+      res.setHeader("Allow", "GET, POST");
+      return res.status(405).send("Method Not Allowed");
+    }
+
     let dnsMessage;
 
-    if (request.method === "GET") {
-      const url = new URL(request.url);
+    if (req.method === "GET") {
+      const url = new URL(req.url, "https://localhost");
       const dns = url.searchParams.get("dns");
 
       if (!dns) {
-        return new Response("Missing dns parameter", {
-          status: 400
-        });
+        return res.status(400).send("Missing dns parameter");
       }
 
-      dnsMessage = decodeDnsGetValue(dns);
+      dnsMessage = decodeGetRequest(dns);
     } else {
-      dnsMessage = Buffer.from(await request.arrayBuffer());
+      dnsMessage = Buffer.isBuffer(req.body)
+        ? req.body
+        : Buffer.from(req.body || "");
     }
 
     const dnsRequest = dnsPacket.decode(dnsMessage);
     const question = dnsRequest.questions?.[0];
 
     if (!question?.name) {
-      return new Response("Missing DNS question", {
-        status: 400
-      });
+      return res.status(400).send("Missing DNS question");
     }
 
     if (isBlocked(question.name)) {
-      return new Response(createBlockedResponse(dnsRequest), {
-        status: 200,
-        headers: {
-          "content-type": "application/dns-message",
-          "cache-control": "public, max-age=60"
-        }
-      });
+      const response = createBlockedResponse(dnsRequest);
+
+      res.setHeader("Content-Type", "application/dns-message");
+      res.setHeader("Cache-Control", "public, max-age=60");
+
+      return res.status(200).send(response);
     }
 
     const upstream = await fetch(UPSTREAM_DOH, {
@@ -133,23 +128,19 @@ export default async function handler(request) {
     });
 
     if (!upstream.ok) {
-      return new Response("Upstream DNS error", {
-        status: 502
-      });
+      return res.status(502).send("Upstream DNS error");
     }
 
-    return new Response(await upstream.arrayBuffer(), {
-      status: 200,
-      headers: {
-        "content-type": "application/dns-message",
-        "cache-control": "no-store"
-      }
-    });
-  } catch (error) {
-    console.error("DNS processing error:", error);
+    const responseBuffer = Buffer.from(
+      await upstream.arrayBuffer()
+    );
 
-    return new Response("DNS processing error", {
-      status: 500
-    });
+    res.setHeader("Content-Type", "application/dns-message");
+    res.setHeader("Cache-Control", "no-store");
+
+    return res.status(200).send(responseBuffer);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).send("DNS processing error");
   }
-}
+};

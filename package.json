@@ -1,0 +1,11 @@
+{
+  "name": "ads-blocker",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": "24.x"
+  },
+  "dependencies": {
+    "dns-packet": "^5.6.1"
+  }
+}
