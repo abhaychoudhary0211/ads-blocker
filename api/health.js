@@ -1,6 +1,3 @@
-export default function handler() {
-  return Response.json({
-    name: "My AdBlocker",
-    status: "online"
-  });
+export default function handler(req, res) {
+  res.status(200).send("OK");
 }
