@@ -1,7 +1,7 @@
 {
   "name": "ads-blocker",
   "private": true,
-  "type": "commonjs",
+  "type": "module",
   "engines": {
     "node": "24.x"
   },
